@@ -14,6 +14,8 @@ const maxMessageLength = 12000;
 
 var lastMessage = '';
 
+var streamQueue = Promise.resolve();
+
 app.use(express.json());
 
 /** SillyTavern calls this to check if the API is available, the response doesn't really matter */
@@ -46,9 +48,16 @@ app.post('/(.*)/chat/completions', async (req, res, next) => {
 
         let tsThread = await createSlackThread(promptMessages[0]);
 
+        if (tsThread === null || tsThread === undefined) {
+            throw new Error("First message did not return a thread timestamp. Make sure that CHANNEL is set to a channel ID that both your Slack user and Claude have access to.")
+        }
+
+        console.log(`Created thread with ts ${tsThread}`);
+
         if (promptMessages.length > 1) {
             for (let i = 1; i < promptMessages.length; i++) {
                 await createSlackReply(promptMessages[i], tsThread);
+                console.log(`Created ${i}. reply on thread ${tsThread}`);
             }
         }
 
@@ -56,14 +65,18 @@ app.post('/(.*)/chat/completions', async (req, res, next) => {
         let timeout = null;
 
         if (stream) {
+            console.log("Opened stream for Claude's response.");
+            streamQueue = Promise.resolve();
             ws.on("message", (message) => {
-                streamNextClaudeResponseChunk(message, res);
+                streamQueue = streamQueue.then(streamNextClaudeResponseChunk.bind(this, message, res));
             });
 
             timeout = setTimeout(() => {
+                console.log("Streaming response taking too long, closing stream.")
                 finishStream(res);
-            }, 180000);
+            }, 240000);
         } else {
+            console.log("Awaiting Claude's response.");
             ws.on("message", (message) => {
                 getClaudeResponse(message, res);
             });
@@ -79,12 +92,14 @@ app.post('/(.*)/chat/completions', async (req, res, next) => {
 
         res.on("finish", () => {
             ws.close();
+            console.log("Finished returning Claude's response.");
             if (timeout) {
                 clearTimeout(timeout);
             }
-        })
+        });
 
         await createClaudePing(tsThread);
+        console.log(`Created Claude ping on thread ${tsThread}`);
     } catch (error) {
         console.error(error);
         next(error);
@@ -93,7 +108,35 @@ app.post('/(.*)/chat/completions', async (req, res, next) => {
 
 app.listen(config.PORT, () => {
     console.log(`Slaude is running at http://localhost:${config.PORT}`);
+    checkConfig();
 });
+
+function checkConfig() {
+    if (config.TOKEN.length <= 9 || !config.TOKEN.startsWith("xoxc")) {
+        console.warn("TOKEN looks abnormal, please verify TOKEN setting");
+    }
+    if (config.COOKIE.length <= 9 || !config.COOKIE.startsWith("xoxd")) {
+        console.warn("COOKIE looks abnormal, please verify COOKIE setting");
+    }
+    if (config.TEAM_ID.includes('.slack.com')) {
+        console.warn("TEAM_ID needs to be the part before '.slack.com', not the entire URL.");
+    }
+    if (!config.CHANNEL.startsWith('C')) {
+        console.warn("Your CHANNEL might be wrong, please make sure you copy the channel ID of a channel you and Claude both have access to, like #random.");
+    }
+    if (config.CHANNEL.startsWith('D')) {
+        console.warn("It looks like you might have put Claude's DM channel ID into the CHANNEL setting.");
+    }
+    if (!config.CLAUDE_USER.startsWith('U')) {
+        console.warn("Your CLAUDE_USER might be wrong, please make sure you copied Claude's Member ID, NOT his Channel ID");
+    }
+    if (config.CLAUDE_USER.startsWith('D')) {
+        console.warn("It looks like you might have put Claude's DM channel ID into the CLAUDE_USER setting, plase make sure you use his Member ID instead.");
+    }
+    if (config.PING_MESSAGE.length === 0) {
+        console.warn('PING_MESSAGE should not be completely empty, otherwise Claude will not produce a response. If you want nothing in the ping message except for the Claude ping, make sure there is at least an empty space in the string, like " "');
+    }
+}
 
 /** Opens a WebSocket connection to Slack with an awaitable Promise */
 function openWebSocketConnection() {
@@ -112,6 +155,12 @@ function openWebSocketConnection() {
         ws.on("open", () => {
             resolve(ws);
         })
+
+        ws.on("close", (code, reason) => {
+            if (code !== 1000 && code !== 1005) {
+                console.error(`WebSocket connection closed abnormally with code ${code}. Your cookie and/or token might be incorrect or expired.`)
+            }
+        })
     });
 }
 
@@ -120,7 +169,13 @@ function openWebSocketConnection() {
  * Only needed for streaming.
  */
 function getNextChunk(text) {
+    // Current and last message are identical, can skip streaming a chunk.
     if (text === lastMessage) {
+        return '';
+    }
+
+    // if the next message doesn't have the entire previous message in it we received something out of order and dismissing it is the safest option
+    if (!text.includes(lastMessage)) {
         return '';
     }
 
@@ -141,35 +196,40 @@ function stripTyping(text) {
  * @param {*} res The Response object for SillyTavern's request
  */
 function streamNextClaudeResponseChunk(message, res) {
-    try {
-        let data = JSON.parse(message);
-        if (data.subtype === 'message_changed') {
-            let text = data.message.text;
-            let stillTyping = text.endsWith(typingString);
-            text = stillTyping ? stripTyping(text) : text;
-            let chunk = getNextChunk(text);
-            
-            let streamData = {
-                id: '', 
-                created: '', 
-                object: 'chat.completion.chunk',
-                choices: [{
-                    delta: {
-                        content: chunk
-                    },
-                    index: 0
-                }]
-            };
-        
-            res.write('\ndata: ' + JSON.stringify(streamData));
+    return new Promise((resolve, reject) => {
+        try {
+            let data = JSON.parse(message);
+            if (data.subtype === 'message_changed') {
+                let text = data.message.text;
+                let stillTyping = text.endsWith(typingString);
+                text = stillTyping ? stripTyping(text) : text;
+                let chunk = getNextChunk(text);
 
-            if (!stillTyping) {
-                finishStream(res);
+                if (chunk.length === 0) {
+                    resolve();
+                    return;
+                }
+                
+                let streamData = {
+                    choices: [{
+                        delta: {
+                            content: chunk
+                        }
+                    }]
+                };
+            
+                res.write('\ndata: ' + JSON.stringify(streamData));
+    
+                if (!stillTyping) {
+                    finishStream(res);
+                }
             }
+            resolve();
+        } catch (error) {
+            console.error('Error parsing Slack WebSocket message');
+            reject(error);
         }
-    } catch (error) {
-        console.error('Error parsing Slack WebSocket message:', error);
-    }
+    });
 }
 
 /**
@@ -184,13 +244,10 @@ function getClaudeResponse(message, res) {
         if (data.subtype === 'message_changed') {
             if (!data.message.text.endsWith(typingString)) {
                 res.json({
-                    id: '', created: '',
-                    object: 'chat.completion',
                     choices: [{
                         message: {
                             content: data.message.text
-                        },
-                        index: 0
+                        }
                     }]
                 });
             } else {
@@ -329,9 +386,19 @@ async function postSlackMessage(msg, thread_ts, pingClaude) {
             ...form.getHeaders()
         }
     });
+
     if ("ok" in res.data && !res.data.ok) {
-        console.log(res.data)
+        if ("error" in res.data) {
+            if (res.data.error === "invalid_auth" || res.data.error === "not_authed") {
+                throw new Error("Failed posting message to Slack. Your TOKEN and/or COOKIE might be incorrect or expired.");
+            } else {
+                throw new Error(res.data.error);
+            }
+        } else {
+            throw new Error(res.data);
+        }
     }
+
     return res.data.ts;
 }
 
