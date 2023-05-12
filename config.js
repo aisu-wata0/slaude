@@ -12,13 +12,22 @@ const config = {
     PING_MESSAGE: "):",
     minimum_split_size: 500,
 
+    // Claude specs:
+    // Human, Assistant, H, A
     rename_roles: {
-        'system': 'Human',
-        'user': 'Human',
-        'assistant': 'Assistant',
-        'example_user': 'Human',
-        'example_assistant': 'Assistant'
+        'system': 'H',
+        'user': 'H',
+        'assistant': 'A',
+        'example_user': 'H',
+        'example_assistant': 'A'
     },
+
+    dont_send_user_role_if_first_message: true,
+
+    stop_message_when_string_is_found: [
+        "\nH: ",
+        "\nHuman: ",
+    ],
 
     PORT: 5004,
 }

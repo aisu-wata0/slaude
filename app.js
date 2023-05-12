@@ -189,17 +189,27 @@ function stripTyping(text) {
     return text.slice(0, text.length-typingString.length);
 }
 
-function isSenderClaude(messsageData) {
+const blacklisted_threads = new Set();
+// better way would be to register whitelisted threads, when you create them
+// and them unregistering them when you're done getting the message
+function isMessageValid(messsageData) {
+    if (!messsageData.message) {
+        return true
+    }
     let senderID = messsageData.user;
     if (!senderID) {
-        if (messsageData.message && messsageData.message.user) {
+        if (messsageData.message.user) {
             senderID = messsageData.message.user
         }
     }
     if (senderID && senderID !== config.CLAUDE_USER) {
         // if not from Claude, happens sometimes if last thread is still going somehow
-        console.warn("Message from socket not from Claude but from ID =", senderID)
+        console.log("Message from socket not from Claude but from ID =", senderID)
         return false;
+    }
+    if (messsageData.message.thread_ts && blacklisted_threads.has(messsageData.message.thread_ts)) {
+        console.log("Claude still sending message in other thread ", messsageData.message.thread_ts)
+        return false
     }
     return true;
 }
@@ -214,7 +224,7 @@ function streamNextClaudeResponseChunk(message, res) {
     return new Promise((resolve, reject) => {
         try {
             let data = JSON.parse(message);
-            if (!isSenderClaude(data)) {
+            if (!isMessageValid(data)) {
                 resolve();
                 return;
             }
@@ -222,6 +232,15 @@ function streamNextClaudeResponseChunk(message, res) {
                 let text = data.message.text;
                 let stillTyping = text.endsWith(typingString);
                 text = stillTyping ? stripTyping(text) : text;
+                const textUncropped = text
+                text = cropText(text)
+                if (textUncropped.length > text.length) {
+                    stillTyping = false
+                    if (data.message.thread_ts) {
+                        blacklisted_threads.add(data.message.thread_ts);
+                        console.log("Message thread stopped early ", data.message.thread_ts)
+                    }
+                }
                 let chunk = getNextChunk(text);
 
                 if (chunk.length === 0) {
@@ -251,6 +270,19 @@ function streamNextClaudeResponseChunk(message, res) {
     });
 }
 
+function cropText(text) {
+    if (config.stop_message_when_string_is_found) {
+        for (let summaryCrop of config.stop_message_when_string_is_found) {
+            let cropIdx = text.indexOf(summaryCrop)
+            if (cropIdx > 0) {
+                console.warn("config.stop_message_when_string_is_found: CROPPING TEXT AT IDX =", cropIdx, " TEXT CROPPED =", JSON.stringify(text.slice(cropIdx, cropIdx + 20).trim()), " START OF TEXT =", JSON.stringify(text.slice(0, 20).trim()))
+                text = text.slice(0, cropIdx)
+            }
+        }
+    }
+    return text
+}
+
 /**
  * Used as a callback for WebSocket to get Claude's response. Won't actually do anything until Claude stops "typing"
  * and then send it back to SillyTavern as an OpenAI chat completion result. Used when not streaming.
@@ -260,7 +292,7 @@ function streamNextClaudeResponseChunk(message, res) {
 function getClaudeResponse(message, res) {
     try {
         let data = JSON.parse(message);
-        if (!isSenderClaude(data)) {
+        if (!isMessageValid(data)) {
             if (lastMessage && lastMessage.length > 0) {
                 console.warn("MESSAGE INCOMPLETE, CLAUDE SENDING FILE")
                 const content = lastMessage
@@ -276,18 +308,29 @@ function getClaudeResponse(message, res) {
             return;
         }
         if (data.subtype === 'message_changed') {
-            if (!data.message.text.endsWith(typingString)) {
+            let text = data.message.text
+            let stillTyping = text.endsWith(typingString);
+            const textUncropped = text
+            text = cropText(text)
+            if (textUncropped.length > text.length) {
+                stillTyping = false
+                if (data.message.thread_ts) {
+                    blacklisted_threads.add(data.message.thread_ts);
+                    console.log("Message thread stopped early ", data.message.thread_ts, " blacklisted_threads =", blacklisted_threads)
+                }
+            }
+            if (!stillTyping) {
                 res.json({
                     choices: [{
                         message: {
-                            content: data.message.text
+                            content: text
                         }
                     }]
                 });
             } else {
                 // mostly just leaving this log in since there is otherwise zero feedback that something is incoming from Slack
-                lastMessage = data.message.text
-                console.log(`received ${data.message.text.length} characters...`);
+                lastMessage = text
+                console.log(`received ${text.length} characters...`);
             }
         }
     } catch (error) {
@@ -318,7 +361,7 @@ function buildSlackPromptMessages(messages) {
     let currentPrompt = '';
     for (let i = 0; i < messages.length; i++) {
         let msg = messages[i];
-        let promptPart = convertToPrompt(msg);
+        let promptPart = convertToPrompt(msg, i);
         if (currentPrompt.length + promptPart.length < maxMessageLength) {
             currentPrompt += promptPart;
         } else {
@@ -329,7 +372,7 @@ function buildSlackPromptMessages(messages) {
             if (promptPart.length > maxMessageLength) {
                 let split = splitMessageInTwo(msg.content, maxMessageLength, 500)
                 messages.splice(i + 1, 0, { ...msg, content: split[1], role: ""})
-                promptPart = convertToPrompt({ ...msg, content: split[0] });
+                promptPart = convertToPrompt({ ...msg, content: split[0] }, i);
             }
             currentPrompt = promptPart;
         }
@@ -342,11 +385,14 @@ function buildSlackPromptMessages(messages) {
  * Takes an OpenAI message and translates it into a format of "Role: Message"
  * Messages from the System role are send as is.
  * For example dialogue it takes the actual role from the 'name' property instead.
- * By default the role "user" is replaced with "Human" and the role "assistant" with "Assitant"
+ * By default the role "user" is replaced with "Human" and the role "assistant" with "Assistant"
  * @param {*} msg 
  * @returns 
  */
-function convertToPrompt(msg) {
+function convertToPrompt(msg, idx) {
+    if (config.dont_send_user_role_if_first_message && idx == 0 && (msg.role === 'system' || msg.role === 'user')) {
+        return `${msg.content}\n\n`
+    }
     if (msg.role === 'system') {
         if ('name' in msg) {
             return `${config.rename_roles[msg.name]}: ${msg.content}\n\n`
@@ -438,6 +484,7 @@ async function postSlackMessage(msg, thread_ts, pingClaude) {
 }
 
 async function createSlackThread(promptMsg) {
+    lastMessage = '';
     return await postSlackMessage(promptMsg, null, false);
 }
 
