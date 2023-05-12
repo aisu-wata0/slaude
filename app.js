@@ -189,6 +189,21 @@ function stripTyping(text) {
     return text.slice(0, text.length-typingString.length);
 }
 
+function isSenderClaude(messsageData) {
+    let senderID = messsageData.user;
+    if (!senderID) {
+        if (messsageData.message && messsageData.message.user) {
+            senderID = messsageData.message.user
+        }
+    }
+    if (senderID && senderID !== config.CLAUDE_USER) {
+        // if not from Claude, happens sometimes if last thread is still going somehow
+        console.warn("Message from socket not from Claude but from ID =", senderID)
+        return false;
+    }
+    return true;
+}
+
 /** 
  * Used as a callback for WebSocket to get the next chunk of the response Claude is currently typing and
  * write it into the response for SillyTavern. Used for streaming.
@@ -199,6 +214,10 @@ function streamNextClaudeResponseChunk(message, res) {
     return new Promise((resolve, reject) => {
         try {
             let data = JSON.parse(message);
+            if (!isSenderClaude(data)) {
+                resolve();
+                return;
+            }
             if (data.subtype === 'message_changed') {
                 let text = data.message.text;
                 let stillTyping = text.endsWith(typingString);
@@ -241,6 +260,21 @@ function streamNextClaudeResponseChunk(message, res) {
 function getClaudeResponse(message, res) {
     try {
         let data = JSON.parse(message);
+        if (!isSenderClaude(data)) {
+            if (lastMessage && lastMessage.length > 0) {
+                console.warn("MESSAGE INCOMPLETE, CLAUDE SENDING FILE")
+                const content = lastMessage
+                lastMessage = ''
+                res.json({
+                    choices: [{
+                        message: {
+                            content: content,
+                        }
+                    }]
+                });
+            }
+            return;
+        }
         if (data.subtype === 'message_changed') {
             if (!data.message.text.endsWith(typingString)) {
                 res.json({
@@ -252,6 +286,7 @@ function getClaudeResponse(message, res) {
                 });
             } else {
                 // mostly just leaving this log in since there is otherwise zero feedback that something is incoming from Slack
+                lastMessage = data.message.text
                 console.log(`received ${data.message.text.length} characters...`);
             }
         }
