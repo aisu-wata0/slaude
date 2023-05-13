@@ -74,7 +74,7 @@ app.post('/(.*)/chat/completions', async (req, res, next) => {
             timeout = setTimeout(() => {
                 console.log("Streaming response taking too long, closing stream.")
                 finishStream(res);
-            }, 240000);
+            }, 2*60*1000);
         } else {
             console.log("Awaiting Claude's response.");
             ws.on("message", (message) => {
@@ -204,11 +204,11 @@ function isMessageValid(messsageData) {
     }
     if (senderID && senderID !== config.CLAUDE_USER) {
         // if not from Claude, happens sometimes if last thread is still going somehow
-        console.log("Message from socket not from Claude but from ID =", senderID)
+        console.log("Message from socket not from Claude but from ID =", senderID, JSON.stringify(messsageData.message.text.slice(0, 55).trim()))
         return false;
     }
     if (messsageData.message.thread_ts && blacklisted_threads.has(messsageData.message.thread_ts)) {
-        console.log("Claude still sending message in other thread ", messsageData.message.thread_ts)
+        console.log("Claude still sending message in other thread ", messsageData.message.thread_ts, JSON.stringify(messsageData.message.text.slice(0, 55).trim()))
         return false
     }
     return true;
@@ -243,7 +243,7 @@ function streamNextClaudeResponseChunk(message, res) {
                 }
                 let chunk = getNextChunk(text);
 
-                if (chunk.length === 0) {
+                if (chunk.length === 0 && stillTyping) {
                     resolve();
                     return;
                 }
