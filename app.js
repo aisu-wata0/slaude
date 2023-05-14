@@ -11,6 +11,8 @@ const app = express();
 const typingString = "\n\n_Typing…_";
 
 const maxMessageLength = 12000;
+// Overhead to take into account when splitting messages, for example, the length of "Human:"
+const messageLengthOverhead = 20;
 
 var lastMessage = '';
 
@@ -204,11 +206,12 @@ function isMessageValid(messsageData) {
     }
     if (senderID && senderID !== config.CLAUDE_USER) {
         // if not from Claude, happens sometimes if last thread is still going somehow
-        console.log("Message from socket not from Claude but from ID =", senderID, JSON.stringify(messsageData.message.text.slice(0, 55).trim()))
+        // console.log("Message from socket not from Claude but from ID =", senderID, JSON.stringify(messsageData.message.text.slice(0, 55).trim()))
         return false;
     }
     if (messsageData.message.thread_ts && blacklisted_threads.has(messsageData.message.thread_ts)) {
-        console.log("Claude still sending message in other thread ", messsageData.message.thread_ts, JSON.stringify(messsageData.message.text.slice(0, 55).trim()))
+        console.log("Intended: Ignoring Claude sending message in old thread ", messsageData.message.thread_ts)
+        // console.log(JSON.stringify(messsageData.message.text.slice(0, 55).trim()))
         return false
     }
     return true;
@@ -255,8 +258,11 @@ function streamNextClaudeResponseChunk(message, res) {
                         }
                     }]
                 };
-            
-                res.write('\ndata: ' + JSON.stringify(streamData));
+                try {
+                    res.write('\ndata: ' + JSON.stringify(streamData));
+                } catch (error) {
+                    console.error(error)
+                }
     
                 if (!stillTyping) {
                     finishStream(res);
@@ -344,9 +350,16 @@ function getClaudeResponse(message, res) {
  * @param {*} res - The Response object for SillyTavern's request
  */
 function finishStream(res) {
-    lastMessage = '';
-    res.write('\ndata: [DONE]');
-    res.end();
+    try {
+        res.write('\ndata: [DONE]');
+    } catch (error) {
+        console.error(error)
+    }
+    try {
+        res.end();
+    } catch (error) {
+        console.error(error)
+    }
 }
 
 /**
@@ -370,7 +383,7 @@ function buildSlackPromptMessages(messages) {
             }
             // edge case where a single message is bigger than allowed
             if (promptPart.length > maxMessageLength) {
-                let split = splitMessageInTwo(msg.content, maxMessageLength, 500)
+                let split = splitMessageInTwo(msg.content, maxMessageLength - messageLengthOverhead, 500)
                 messages.splice(i + 1, 0, { ...msg, content: split[1], role: ""})
                 promptPart = convertToPrompt({ ...msg, content: split[0] }, i);
             }
@@ -484,7 +497,6 @@ async function postSlackMessage(msg, thread_ts, pingClaude) {
 }
 
 async function createSlackThread(promptMsg) {
-    lastMessage = '';
     return await postSlackMessage(promptMsg, null, false);
 }
 
@@ -493,5 +505,6 @@ async function createSlackReply(promptMsg, ts) {
 }
 
 async function createClaudePing(ts) {
+    lastMessage = '';
     return await postSlackMessage(null, ts, true);
 }
