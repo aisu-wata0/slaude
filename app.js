@@ -14,10 +14,6 @@ const maxMessageLength = 12000;
 // Overhead to take into account when splitting messages, for example, the length of "Human:"
 const messageLengthOverhead = 20;
 
-var lastMessage = '';
-
-var streamQueue = Promise.resolve();
-
 app.use(express.json());
 
 /** SillyTavern calls this to check if the API is available, the response doesn't really matter */
@@ -45,21 +41,27 @@ app.post('/(.*)/chat/completions', async (req, res, next) => {
     }
 
     try {
+        let streamQueue = Promise.resolve();
+
         let stream = req.body.stream ?? false;
         let promptMessages = buildSlackPromptMessages(req.body.messages);
 
-        let tsThread = await createSlackThread(promptMessages[0]);
+        let threadTs = await createSlackThread(promptMessages[0]);
 
-        if (tsThread === null || tsThread === undefined) {
+        if (threadTs === null || threadTs === undefined) {
             throw new Error("First message did not return a thread timestamp. Make sure that CHANNEL is set to a channel ID that both your Slack user and Claude have access to.")
         }
 
-        console.log(`Created thread with ts ${tsThread}`);
+        let thread = {
+            ts: threadTs,
+            lastMessage: ""
+        }
+        console.log(`Created thread with ts ${thread.ts}`);
 
         if (promptMessages.length > 1) {
             for (let i = 1; i < promptMessages.length; i++) {
-                await createSlackReply(promptMessages[i], tsThread);
-                console.log(`Created ${i}. reply on thread ${tsThread}`);
+                await createSlackReply(promptMessages[i], thread.ts);
+                console.log(`Created ${i}. reply on thread ${thread.ts}`);
             }
         }
 
@@ -70,23 +72,36 @@ app.post('/(.*)/chat/completions', async (req, res, next) => {
             console.log("Opened stream for Claude's response.");
             streamQueue = Promise.resolve();
             ws.on("message", (message) => {
-                streamQueue = streamQueue.then(streamNextClaudeResponseChunk.bind(this, message, res));
+                streamQueue = streamQueue.then(streamNextClaudeResponseChunk.bind(this, message, res, thread));
             });
 
             timeout = setTimeout(() => {
                 console.log("Streaming response taking too long, closing stream.")
                 finishStream(res);
-            }, 2*60*1000);
+            }, 2 * 60 * 1000);
         } else {
             console.log("Awaiting Claude's response.");
             ws.on("message", (message) => {
-                getClaudeResponse(message, res);
+                getClaudeResponse(message, res, thread);
             });
+
+            timeout = setTimeout(() => {
+                console.log("Response taking too long, ending.")
+                try {
+                    res.end();
+                } catch (error) {
+                    console.error(error)
+                }
+            }, 2 * 60 * 1000);
         }
         ws.on("error", (err) => {
             console.error(err);
         });
         ws.on("close", (code, reason) => {
+            try {
+                res.end();
+            } catch (error) {
+            }
             if (code !== 1000 && code !== 1005) {
                 console.log(`Socket closed with code ${code} and reason ${reason}`);
             }
@@ -100,8 +115,13 @@ app.post('/(.*)/chat/completions', async (req, res, next) => {
             }
         });
 
-        await createClaudePing(tsThread);
-        console.log(`Created Claude ping on thread ${tsThread}`);
+        if (config.edit_msg_with_ping) {
+            await claudePingEdit(promptMessages[0], thread.ts);
+            console.log(`Added Claude ping on thread ${thread.ts}`);
+        } else {
+            await createClaudePing(thread.ts);
+            console.log(`Created Claude ping on thread ${thread.ts}`);
+        }
     } catch (error) {
         console.error(error);
         next(error);
@@ -159,8 +179,11 @@ function openWebSocketConnection(res) {
         })
 
         ws.on("close", (code, reason) => {
-            if (code !== 1000 && code !== 1005) {
+            try {
                 res.end();
+            } catch (error) {
+            }
+            if (code !== 1000 && code !== 1005) {
                 console.error(`WebSocket connection closed abnormally with code ${code}. Your cookie and/or token might be incorrect or expired.`)
             }
         })
@@ -171,19 +194,19 @@ function openWebSocketConnection(res) {
  * Hacky bullshit that compares the last message we got from Slack with the current one and returns the difference.
  * Only needed for streaming.
  */
-function getNextChunk(text) {
+function getNextChunk(text, thread) {
     // Current and last message are identical, can skip streaming a chunk.
-    if (text === lastMessage) {
+    if (text === thread.lastMessage) {
         return '';
     }
 
     // if the next message doesn't have the entire previous message in it we received something out of order and dismissing it is the safest option
-    if (!text.includes(lastMessage)) {
+    if (!text.includes(thread.lastMessage)) {
         return '';
     }
 
-    let chunk = text.slice(lastMessage.length, text.length);
-    lastMessage = text;
+    let chunk = text.slice(thread.lastMessage.length, text.length);
+    thread.lastMessage = text;
     return chunk;
 }
 
@@ -195,7 +218,7 @@ function stripTyping(text) {
 const blacklisted_threads = new Set();
 // better way would be to register whitelisted threads, when you create them
 // and them unregistering them when you're done getting the message
-function isMessageValid(messsageData) {
+function isMessageValid(messsageData, thread) {
     if (!messsageData.message) {
         return true
     }
@@ -210,9 +233,10 @@ function isMessageValid(messsageData) {
         // console.log("Message from socket not from Claude but from ID =", senderID, JSON.stringify(messsageData.message.text.slice(0, 55).trim()))
         return false;
     }
-    if (messsageData.message.thread_ts && blacklisted_threads.has(messsageData.message.thread_ts)) {
+    // console.log("messsageData.message.thread_ts === thread.ts", messsageData.message.thread_ts === thread.ts, messsageData.message.thread_ts, thread.ts)
+    if (!messsageData.message.thread_ts || !(messsageData.message.thread_ts === thread.ts)) {
         console.log("Intended: Ignoring Claude sending message in old thread ", messsageData.message.thread_ts)
-        // console.log(JSON.stringify(messsageData.message.text.slice(0, 55).trim()))
+        console.log(JSON.stringify(messsageData.message.text.slice(0, 55).trim()))
         return false
     }
     return true;
@@ -224,11 +248,11 @@ function isMessageValid(messsageData) {
  * @param {*} message The WebSocket message object
  * @param {*} res The Response object for SillyTavern's request
  */
-function streamNextClaudeResponseChunk(message, res) {
+function streamNextClaudeResponseChunk(message, res, thread) {
     return new Promise((resolve, reject) => {
         try {
             let data = JSON.parse(message);
-            if (!isMessageValid(data)) {
+            if (!isMessageValid(data, thread)) {
                 resolve();
                 return;
             }
@@ -245,13 +269,13 @@ function streamNextClaudeResponseChunk(message, res) {
                         console.log("Message thread stopped early ", data.message.thread_ts)
                     }
                 }
-                let chunk = getNextChunk(text);
+                let chunk = getNextChunk(text, thread);
 
                 if (chunk.length === 0 && stillTyping) {
                     resolve();
                     return;
                 }
-                
+                console.log(`Got ${chunk.length} characters from thread ${thread.ts}`)
                 let streamData = {
                     choices: [{
                         delta: {
@@ -296,14 +320,14 @@ function cropText(text) {
  * @param {*} message The WebSocket message object
  * @param {*} res The Response object for SillyTavern's request
  */
-function getClaudeResponse(message, res) {
+function getClaudeResponse(message, res, thread) {
     try {
         let data = JSON.parse(message);
-        if (!isMessageValid(data)) {
-            if (lastMessage && lastMessage.length > 0) {
+        if (!isMessageValid(data, thread)) {
+            if (thread.lastMessage && thread.lastMessage.length > 0) {
                 console.warn("MESSAGE INCOMPLETE, CLAUDE SENDING FILE")
-                const content = lastMessage
-                lastMessage = ''
+                const content = thread.lastMessage
+                thread.lastMessage = ''
                 res.json({
                     choices: [{
                         message: {
@@ -336,7 +360,7 @@ function getClaudeResponse(message, res) {
                 });
             } else {
                 // mostly just leaving this log in since there is otherwise zero feedback that something is incoming from Slack
-                lastMessage = text
+                thread.lastMessage = text
                 console.log(`received ${text.length} characters...`);
             }
         }
@@ -425,7 +449,7 @@ function convertToPrompt(msg, idx) {
  * @param {*} pingClaude Whether to ping Claude with the message
  * @returns 
  */
-async function postSlackMessage(msg, thread_ts, pingClaude) {
+async function postSlackMessage(msg, thread_ts, pingClaude, edit_msg_ts = null) {
     var form = new FormData();
     form.append('token', config.TOKEN);
     form.append('channel', `${config.CHANNEL}`);
@@ -436,6 +460,9 @@ async function postSlackMessage(msg, thread_ts, pingClaude) {
     form.append('unfurl', '[]');
     form.append('include_channel_perm_error', 'true');
     form.append('_x_reason', 'webapp_message_send');
+    if (edit_msg_ts) {
+        form.append('ts', edit_msg_ts);
+    }
     
     if (thread_ts !== null) {
         form.append('thread_ts', thread_ts);
@@ -454,27 +481,18 @@ async function postSlackMessage(msg, thread_ts, pingClaude) {
             'text': msg
         });
     } else {
-        if (config.PING_MESSAGE_PREFIX) {
-            blocks[0].elements[0].elements.push({
-                'type': 'text',
-                'text': config.PING_MESSAGE_PREFIX
-            }); 
-        }
         blocks[0].elements[0].elements.push({
-            'type': 'user',
-            'user_id': config.CLAUDE_USER
+            'type': 'text',
+            'text': `${config.PING_MESSAGE_PREFIX}<@${config.CLAUDE_USER}>${config.PING_MESSAGE}`
         });
-        if (config.PING_MESSAGE) {
-            blocks[0].elements[0].elements.push({
-                'type': 'text',
-                'text': config.PING_MESSAGE
-            });
-        }
     }
 
     form.append('blocks', JSON.stringify(blocks));
-
-    var res = await axios.post(`https://${config.TEAM_ID}.slack.com/api/chat.postMessage`, form, {
+    var posturl = `https://${config.TEAM_ID}.slack.com/api/chat.postMessage`
+    if (edit_msg_ts) {
+        posturl = `https://${config.TEAM_ID}.slack.com/api/chat.update`
+    }
+    var res = await axios.post(posturl, form, {
         headers: {
             'Cookie': `d=${config.COOKIE};`,
             'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64; rv:109.0) Gecko/20100101 Firefox/112.0',
@@ -505,7 +523,17 @@ async function createSlackReply(promptMsg, ts) {
     return await postSlackMessage(promptMsg, ts, false);
 }
 
+async function claudePingEdit(promptMsg, threadTs) {
+    const ping = `${config.PING_PREFIX}<@${config.CLAUDE_USER}>${config.PING_SUFFIX}`
+    var msg_with_ping = "";
+    if (config.ping_at_start_of_msg) {
+        msg_with_ping = ping + "\n" + promptMsg
+    } else {
+        msg_with_ping = promptMsg + "\n" + ping
+    }
+    return await postSlackMessage(msg_with_ping, null, false, threadTs);
+}
+
 async function createClaudePing(ts) {
-    lastMessage = '';
     return await postSlackMessage(null, ts, true);
 }
