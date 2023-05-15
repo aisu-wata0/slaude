@@ -63,7 +63,7 @@ app.post('/(.*)/chat/completions', async (req, res, next) => {
             }
         }
 
-        let ws = await openWebSocketConnection();
+        let ws = await openWebSocketConnection(res);
         let timeout = null;
 
         if (stream) {
@@ -141,7 +141,7 @@ function checkConfig() {
 }
 
 /** Opens a WebSocket connection to Slack with an awaitable Promise */
-function openWebSocketConnection() {
+function openWebSocketConnection(res) {
     return new Promise((resolve, reject) => {
         setTimeout(() => {
             reject('Timed out establishing WebSocket connection.');
@@ -160,6 +160,7 @@ function openWebSocketConnection() {
 
         ws.on("close", (code, reason) => {
             if (code !== 1000 && code !== 1005) {
+                res.end();
                 console.error(`WebSocket connection closed abnormally with code ${code}. Your cookie and/or token might be incorrect or expired.`)
             }
         })
