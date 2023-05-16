@@ -209,10 +209,11 @@ function stripTyping(text) {
     return text.slice(0, text.length-typingString.length);
 }
 
-const blacklisted_threads = new Set();
-// better way would be to register whitelisted threads, when you create them
-// and them unregistering them when you're done getting the message
 function isMessageValid(messsageData, thread) {
+    // TODO: (test if  this works?) detect when its a file and not a message, and return false
+    if (isMessageFile(messsageData)) {
+        return false
+    }
     if (!messsageData.message) {
         return true
     }
@@ -227,7 +228,21 @@ function isMessageValid(messsageData, thread) {
         // console.log("Message from socket not from Claude but from ID =", senderID, JSON.stringify(messsageData.message.text.slice(0, 55).trim()))
         return false;
     }
+    if (!isMessageFromThread(messsageData, thread)) {
+        return false;
+    }
+    return true;
+}
+
+function isMessageFile(messsageData) {
+    return messsageData.subtype === 'file_share'
+}
+
+function isMessageFromThread(messsageData, thread) {
     // console.log("messsageData.message.thread_ts === thread.ts", messsageData.message.thread_ts === thread.ts, messsageData.message.thread_ts, thread.ts)
+    if (!messsageData.message) {
+        return true
+    }
     if (!messsageData.message.thread_ts || !(messsageData.message.thread_ts === thread.ts)) {
         console.log("Intended: Ignoring Claude sending message in other thread ", messsageData.message.thread_ts, " current thread =", thread.ts)
         console.log(JSON.stringify(messsageData.message.text.slice(0, 55).trim()))
@@ -246,7 +261,15 @@ function streamNextClaudeResponseChunk(message, res, thread) {
     return new Promise((resolve, reject) => {
         try {
             let data = JSON.parse(message);
+            if (!isMessageFromThread(data, thread)) {
+                resolve();
+                return;
+            }
             if (!isMessageValid(data, thread)) {
+                if (thread.lastMessage && thread.lastMessage.length > 0) {
+                    console.warn("MESSAGE INCOMPLETE, CLAUDE SENDING FILE")
+                    finishStream(res);
+                }
                 resolve();
                 return;
             }
@@ -259,7 +282,7 @@ function streamNextClaudeResponseChunk(message, res, thread) {
                 if (textUncropped.length > text.length) {
                     stillTyping = false
                     if (data.message.thread_ts) {
-                        blacklisted_threads.add(data.message.thread_ts);
+                        // blacklisted_threads.add(data.message.thread_ts);
                         console.log("Message thread stopped early ", data.message.thread_ts)
                     }
                 }
@@ -313,19 +336,21 @@ function cropText(text) {
  * and then send it back to SillyTavern as an OpenAI chat completion result. Used when not streaming.
  * @param {*} message The WebSocket message object
  * @param {*} res The Response object for SillyTavern's request
+ * @param {*} thread The thread object with ts and lastMessage
  */
 function getClaudeResponse(message, res, thread) {
     try {
         let data = JSON.parse(message);
+        if (!isMessageFromThread(data, thread)) {
+            return;
+        }
         if (!isMessageValid(data, thread)) {
             if (thread.lastMessage && thread.lastMessage.length > 0) {
                 console.warn("MESSAGE INCOMPLETE, CLAUDE SENDING FILE")
-                const content = thread.lastMessage
-                thread.lastMessage = ''
                 res.json({
                     choices: [{
                         message: {
-                            content: content,
+                            content: thread.lastMessage,
                         }
                     }]
                 });
@@ -340,8 +365,8 @@ function getClaudeResponse(message, res, thread) {
             if (textUncropped.length > text.length) {
                 stillTyping = false
                 if (data.message.thread_ts) {
-                    blacklisted_threads.add(data.message.thread_ts);
-                    console.log("Message thread stopped early ", data.message.thread_ts, " blacklisted_threads =", blacklisted_threads)
+                    // blacklisted_threads.add(data.message.thread_ts);
+                    console.log("Message thread stopped early ", data.message.thread_ts)
                 }
             }
             if (!stillTyping) {
