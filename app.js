@@ -389,6 +389,10 @@ function streamNextClaudeResponseChunk(message, res, thread) {
                         }
                         thread.ClaudeTsBlacklist.add(data.message.ts)
                         thread.ClaudeTsSet.delete(data.message.ts)
+                        if (!thread.totalMessagesCount) {
+                            thread.totalMessagesCount = 0;
+                        }
+                        thread.totalMessagesCount++;
                         claudePingEdit(thread.promptMessages[0], thread.ts);
                     }
                     resolve();
@@ -400,6 +404,13 @@ function streamNextClaudeResponseChunk(message, res, thread) {
                 }
                 // passed filters, use get just this response
                 if (!thread.lastMessageTs) {
+                    if (!thread.totalMessagesCount) {
+                        thread.totalMessagesCount = 0;
+                    }
+                    thread.totalMessagesCount += thread.ClaudeTsSet.size - 1
+                    if (!thread.ClaudeTsBlacklist) {
+                        thread.ClaudeTsBlacklist = new Set();
+                    }
                     thread.ClaudeTsBlacklist = new Set([...thread.ClaudeTsSet, ...thread.ClaudeTsBlacklist]);
                     thread.ClaudeTsBlacklist.delete(data.message.ts)
                     thread.ClaudeTsSet = new Set([data.message.ts]);
@@ -428,6 +439,7 @@ function streamNextClaudeResponseChunk(message, res, thread) {
                 }
     
                 if (!stillTyping) {
+                    console_log(`totalMessagesCount = ${thread.totalMessagesCount}`)
                     finishStreamTimeout(res, thread);
                 }
             }
