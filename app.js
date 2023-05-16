@@ -14,6 +14,46 @@ const maxMessageLength = 12000;
 // Overhead to take into account when splitting messages, for example, the length of "Human:"
 const messageLengthOverhead = 20;
 
+function console_log(...args) {
+    const currentDate = new Date();
+    const milliseconds = currentDate.getMilliseconds().toString().padStart(3, '0');
+    const formattedDate = `${currentDate.toISOString().split("T")[0]} ${currentDate.toTimeString().split(" ")[0]}.${milliseconds}`;
+
+    console.log(`[${formattedDate}]`, ...args);
+}
+function waitTimout(ms) {
+    return new Promise((resolve) => {
+        setTimeout(resolve, ms);
+    });
+}
+
+
+function containsBlacklistedWords(str, blacklist, threshold) {
+    const regex = new RegExp(`\\b(${blacklist.join('|')})\\b`, 'gi');
+    const matches = str.match(regex) || [];
+    return matches.length >= threshold;
+}
+
+const generatedTextFiltered = (text, finished) => {
+    if (text) {
+        if (finished) {
+            if (config.auto_swipe_minimum_length) {
+                if (text.length < config.auto_swipe_minimum_length && text.length !== 0) {
+                    console.log("Generated text size too small")
+                    return true
+                }
+            }
+        }
+        if (config.auto_swipe_blacklist_threshold) {
+            if (containsBlacklistedWords(text, config.auto_swipe_blacklist, config.auto_swipe_blacklist_threshold)) {
+                console.log("Generated text has blacklisted words")
+                return true
+            }
+        }
+    }
+    return false
+}
+
 app.use(express.json());
 
 /** SillyTavern calls this to check if the API is available, the response doesn't really matter */
@@ -54,67 +94,66 @@ app.post('/(.*)/chat/completions', async (req, res, next) => {
 
         let thread = {
             ts: threadTs,
-            lastMessage: ""
+            lastMessage: "",
+            promptMessages,
         }
-        console.log(`Created thread with ts ${thread.ts}`);
+        console_log(`Created thread with ts ${thread.ts}`);
 
         if (promptMessages.length > 1) {
             for (let i = 1; i < promptMessages.length; i++) {
                 await createSlackReply(promptMessages[i], thread.ts);
-                console.log(`Created ${i}. reply on thread ${thread.ts}`);
+                console_log(`Created ${i}. reply on thread ${thread.ts}`);
             }
         }
 
         let ws = await openWebSocketConnection(res);
-        let timeout = null;
 
         if (stream) {
-            console.log("Opened stream for Claude's response.");
+            console_log("Opened stream for Claude's response.");
             streamQueue = Promise.resolve();
             ws.on("message", (message) => {
                 streamQueue = streamQueue.then(streamNextClaudeResponseChunk.bind(this, message, res, thread));
             });
-
-            timeout = setTimeout(() => {
-                console.log("Streaming response taking too long, closing stream.")
-                finishStream(res);
-            }, 2 * 60 * 1000);
         } else {
-            console.log("Awaiting Claude's response.");
+            console_log("Awaiting Claude's response.");
             ws.on("message", (message) => {
                 getClaudeResponse(message, res, thread);
             });
-
-            timeout = setTimeout(() => {
-                console.log("Response taking too long, ending.")
-                try {
-                    res.end();
-                } catch (error) {
-                    console.error(error)
-                }
-            }, 2 * 60 * 1000);
+            if (config.reply_timeout_delay) {
+                thread.timeout = setTimeout(() => {
+                    console_log("Response taking too long, ending.")
+                    try {
+                        res.end();
+                    } catch (error) {
+                        console.error(error)
+                    }
+                }, config.reply_timeout_delay);
+            }
         }
         ws.on("error", (err) => {
             console.error(err);
         });
         ws.on("close", (code, reason) => {
-            console.log(`Closed socket on thread ${thread.ts}`)
+            console_log(`Closed socket on thread ${thread.ts}`)
         });
 
         res.on("finish", () => {
             ws.close();
-            console.log("Finished returning Claude's response.");
-            if (timeout) {
-                clearTimeout(timeout);
+            console_log("Finished returning Claude's response.");
+            if (thread.timeout) {
+                clearTimeout(thread.timeout);
             }
         });
 
         if (config.edit_msg_with_ping) {
-            await claudePingEdit(promptMessages[0], thread.ts);
-            console.log(`Added Claude ping on thread ${thread.ts}`);
+            // if you don't wait, there's a chance Slack triggers Claude twice
+            for (let i = 0; i < config.multi_response; i++){
+                await claudePingEdit(thread.promptMessages[0], thread.ts);
+                await waitTimout(config.multi_response_delay)
+            }
         } else {
             await createClaudePing(thread.ts);
-            console.log(`Created Claude ping on thread ${thread.ts}`);
+            console_log(`Created Claude ping on thread ${thread.ts}`);
         }
     } catch (error) {
         console.error(error);
@@ -123,7 +162,7 @@ app.post('/(.*)/chat/completions', async (req, res, next) => {
 });
 
 app.listen(config.PORT, () => {
-    console.log(`Slaude is running at http://localhost:${config.PORT}`);
+    console_log(`Slaude is running at http://localhost:${config.PORT}`);
     checkConfig();
 });
 
@@ -152,6 +191,15 @@ function checkConfig() {
     if (config.PING_MESSAGE.length === 0) {
         console.warn('PING_MESSAGE should not be completely empty, otherwise Claude will not produce a response. If you want nothing in the ping message except for the Claude ping, make sure there is at least an empty space in the string, like " "');
     }
+
+    if (!config.multi_response) {
+        config.multi_response = 1
+    }
+    Math.max(1, config.multi_response)
+    if (!config.multi_response_delay) {
+        config.multi_response_delay = 100
+    }
+    Math.max(10, config.multi_response_delay)
 }
 
 /** Opens a WebSocket connection to Slack with an awaitable Promise */
@@ -197,6 +245,8 @@ function getNextChunk(text, thread) {
     // if the next message doesn't have the entire previous message in it we received something out of order and dismissing it is the safest option
     if (!text.includes(thread.lastMessage)) {
         return '';
+        // thread.lastMessage = text
+        // return text;
     }
 
     let chunk = text.slice(thread.lastMessage.length, text.length);
@@ -209,46 +259,61 @@ function stripTyping(text) {
     return text.slice(0, text.length-typingString.length);
 }
 
-function isMessageValid(messsageData, thread) {
-    // TODO: (test if  this works?) detect when its a file and not a message, and return false
-    if (isMessageFile(messsageData)) {
+function isMessageValid(data, thread) {
+    if (isMessageFile(data)) {
+        console_log("isMessageFile")
         return false
     }
-    if (!messsageData.message) {
+    if (!data.message) {
         return true
     }
-    let senderID = messsageData.user;
+    let senderID = data.user;
     if (!senderID) {
-        if (messsageData.message.user) {
-            senderID = messsageData.message.user
+        if (data.message.user) {
+            senderID = data.message.user
         }
     }
     if (senderID && senderID !== config.CLAUDE_USER) {
-        // if not from Claude, happens sometimes if last thread is still going somehow
-        // console.log("Message from socket not from Claude but from ID =", senderID, JSON.stringify(messsageData.message.text.slice(0, 55).trim()))
+        // if not from Claude
+        // console_log("Message from socket not from Claude but from ID =", senderID, JSON.stringify(data.message.text.slice(0, 55).trim()))
         return false;
     }
-    if (!isMessageFromThread(messsageData, thread)) {
+    if (!isMessageFromThread(data, thread)) {
+        console_log("!isMessageFromThread(data, thread)")
         return false;
     }
     return true;
 }
 
-function isMessageFile(messsageData) {
-    return messsageData.subtype === 'file_share'
+function isMessageFile(data) {
+    return data.subtype === 'file_share' || data.type === 'file_created' || data.type === 'file_shared'
 }
 
-function isMessageFromThread(messsageData, thread) {
-    // console.log("messsageData.message.thread_ts === thread.ts", messsageData.message.thread_ts === thread.ts, messsageData.message.thread_ts, thread.ts)
-    if (!messsageData.message) {
-        return true
+function isMessageFromThread(data, thread) {
+    if (!data.message || !data.message.ts) {
+        // console_log("!data.message || !data.message.ts")
+        return false
     }
-    if (!messsageData.message.thread_ts || !(messsageData.message.thread_ts === thread.ts)) {
-        console.log("Intended: Ignoring Claude sending message in other thread ", messsageData.message.thread_ts, " current thread =", thread.ts)
-        console.log(JSON.stringify(messsageData.message.text.slice(0, 55).trim()))
+    if (isMessageBlacklisted(data, thread)) {
+        return false
+    }
+    if (!data.message.thread_ts || !(data.message.thread_ts === thread.ts)) {
+        console_log("Intended: Ignoring Claude sending message in other thread ", data.message.thread_ts, " current thread =", thread.ts)
+        console_log(JSON.stringify(data.message.text.slice(0, 55).trim()))
         return false
     }
     return true;
+}
+
+function isMessageBlacklisted(data, thread) {
+    if (thread.ClaudeTsBlacklist) {
+        if (!data.message.ts || thread.ClaudeTsBlacklist.has(data.message.ts)) {
+            console_log("Intended: Ignoring Claude's old message ", data.message.ts)
+            console_log(JSON.stringify(data.message.text.slice(0, 55).trim()))
+            return true
+        }
+    }
+    return false
 }
 
 /** 
@@ -261,19 +326,47 @@ function streamNextClaudeResponseChunk(message, res, thread) {
     return new Promise((resolve, reject) => {
         try {
             let data = JSON.parse(message);
+            // if (thread.ClaudeTsSet) {
+            //     if (thread.ClaudeTsSet.size > 0) {
+            //         console_log("thread.ClaudeTsSet      ", thread.ClaudeTsSet)
+            //     }
+            // }
             if (!isMessageFromThread(data, thread)) {
                 resolve();
                 return;
             }
-            if (!isMessageValid(data, thread)) {
+            if (isMessageFile(data)) {
                 if (thread.lastMessage && thread.lastMessage.length > 0) {
                     console.warn("MESSAGE INCOMPLETE, CLAUDE SENDING FILE")
-                    finishStream(res);
+                    finishStreamTimeout(res, thread);
                 }
                 resolve();
                 return;
             }
+            if (!isMessageValid(data, thread)) {
+                resolve();
+                return;
+            }
             if (data.subtype === 'message_changed') {
+                if (thread.finishTimeout) {
+                    console_log("thread.finishTimeout cleared")
+                    clearTimeout(thread.finishTimeout);
+                    thread.finishTimeout = null;
+                }
+                if (thread.timeout) {
+                    clearTimeout(thread.timeout);
+                    if (config.reply_timeout_delay) {
+                        thread.timeout = setTimeout(() => {
+                            console_log("Streaming response taking too long, closing stream.")
+                            finishStream(res);
+                        }, config.reply_timeout_delay);
+                    }
+                }
+                if (!thread.ClaudeTsSet) {
+                    thread.ClaudeTsSet = new Set();
+                }
+                thread.ClaudeTsSet.add(data.message.ts)
+
                 let text = data.message.text;
                 let stillTyping = text.endsWith(typingString);
                 text = stillTyping ? stripTyping(text) : text;
@@ -283,16 +376,44 @@ function streamNextClaudeResponseChunk(message, res, thread) {
                     stillTyping = false
                     if (data.message.thread_ts) {
                         // blacklisted_threads.add(data.message.thread_ts);
-                        console.log("Message thread stopped early ", data.message.thread_ts)
+                        console_log("Message thread stopped early ", data.message.thread_ts)
                     }
                 }
+
+                if (text.length <= config.auto_swipe_prebuffer_length) {
+                    console_log(`Checking message ${data.message.ts}`)
+                    if (generatedTextFiltered(text, !stillTyping)) {
+                        console_log(`Filtered message  ${data.message.ts}, retrying...`)
+                        if (!thread.ClaudeTsBlacklist) {
+                            thread.ClaudeTsBlacklist = new Set();
+                        }
+                        thread.ClaudeTsBlacklist.add(data.message.ts)
+                        thread.ClaudeTsSet.delete(data.message.ts)
+                        claudePingEdit(thread.promptMessages[0], thread.ts);
+                    }
+                    resolve();
+                    return;
+                }
+                if (thread.lastMessageTs && thread.lastMessageTs !== data.message.ts) {
+                    resolve();
+                    return;
+                }
+                // passed filters, use get just this response
+                if (!thread.lastMessageTs) {
+                    thread.ClaudeTsBlacklist = new Set([...thread.ClaudeTsSet, ...thread.ClaudeTsBlacklist]);
+                    thread.ClaudeTsBlacklist.delete(data.message.ts)
+                    thread.ClaudeTsSet = new Set([data.message.ts]);
+                    thread.lastMessageTs = data.message.ts
+                    console_log(`Passed filters: ${data.message.ts}`)
+                }
+
                 let chunk = getNextChunk(text, thread);
 
                 if (chunk.length === 0 && stillTyping) {
                     resolve();
                     return;
                 }
-                console.log(`Got ${chunk.length} characters from thread ${thread.ts}`)
+                console_log(`Got ${chunk.length} characters from thread ${thread.ts}; post ${data.message.ts}; ${chunk}`)
                 let streamData = {
                     choices: [{
                         delta: {
@@ -307,7 +428,7 @@ function streamNextClaudeResponseChunk(message, res, thread) {
                 }
     
                 if (!stillTyping) {
-                    finishStream(res);
+                    finishStreamTimeout(res, thread);
                 }
             }
             resolve();
@@ -366,7 +487,7 @@ function getClaudeResponse(message, res, thread) {
                 stillTyping = false
                 if (data.message.thread_ts) {
                     // blacklisted_threads.add(data.message.thread_ts);
-                    console.log("Message thread stopped early ", data.message.thread_ts)
+                    console_log("Message thread stopped early ", data.message.thread_ts)
                 }
             }
             if (!stillTyping) {
@@ -380,7 +501,7 @@ function getClaudeResponse(message, res, thread) {
             } else {
                 // mostly just leaving this log in since there is otherwise zero feedback that something is incoming from Slack
                 thread.lastMessage = text
-                console.log(`received ${text.length} characters...`);
+                console_log(`received ${text.length} characters...`);
             }
         }
     } catch (error) {
@@ -403,6 +524,17 @@ function finishStream(res) {
         res.end();
     } catch (error) {
         console.error(error)
+    }
+}
+
+function finishStreamTimeout(res, thread, delay = 0) {
+    if (delay) {
+        console_log("Timeout set")
+        thread.finishTimeout = setTimeout(() => {
+            finishStream(res);
+        }, delay);
+    } else {
+        finishStream(res);
     }
 }
 
@@ -550,7 +682,8 @@ async function claudePingEdit(promptMsg, threadTs) {
     } else {
         msg_with_ping = promptMsg + "\n" + ping
     }
-    return await postSlackMessage(msg_with_ping, null, false, threadTs);
+    await postSlackMessage(msg_with_ping, null, false, threadTs);
+    console_log(`Added Claude ping on thread ${threadTs}`);
 }
 
 async function createClaudePing(ts) {

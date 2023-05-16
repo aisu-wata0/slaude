@@ -18,7 +18,8 @@ const config = {
 
     // if edit_msg_with_ping is true:
     PING_PREFIX: "�A",
-    PING_SUFFIX: "r�",
+    PING_SUFFIX: "r�\n\n\n",
+    // You can put many tokens in these if you want, in the limit, they'll be pushed out of context
     ping_at_start_of_msg: true, // if false, the ping will be edited in to the end of your prompt+card, so it will be between it and [Start Chat]
     // The "Claude" string is necessary to trigger Claude, but it reminds Claude of who it is
     // You can muddle the string by, for example, adding 'A' to the end of the prefix, and 'r' to the start of the suffix
@@ -44,6 +45,35 @@ const config = {
         "\nH: ",
         "\nHuman: ",
     ],
+
+
+    auto_swipe: true,
+    // Be careful with `auto_swipe_minimum_length`, as it will not allow short messages through, set it to 0 if this is undersirable
+    // 0 to disable
+    auto_swipe_minimum_length: 0,
+    // If enough words on the blacklist are contained in the response, auto retry
+    // 0 to disable
+    auto_swipe_blacklist_threshold: 2,
+    auto_swipe_blacklist: [
+        "ethical",
+        "unethical",
+        "guidelines?",
+        "harmful",
+        "illegal",
+        "(un)?comfortable",
+        "engage",
+        "generat(e|ing)",
+        "nonconsensual",
+        "I apologize",
+        "(unable to|not) provide",
+        "inappropriate",
+        "content",
+        "(unable to) continue",
+    ],
+    // wait before starting to send text, lest it be filtered
+    auto_swipe_prebuffer_length: 200,
+
+    reply_timeout_delay: 1 * 60 * 1000,
 
     PORT: 5004,
 }
