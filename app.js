@@ -98,13 +98,7 @@ app.post('/(.*)/chat/completions', async (req, res, next) => {
             console.error(err);
         });
         ws.on("close", (code, reason) => {
-            try {
-                res.end();
-            } catch (error) {
-            }
-            if (code !== 1000 && code !== 1005) {
-                console.log(`Socket closed with code ${code} and reason ${reason}`);
-            }
+            console.log(`Closed socket on thread ${thread.ts}`)
         });
 
         res.on("finish", () => {
@@ -184,7 +178,7 @@ function openWebSocketConnection(res) {
             } catch (error) {
             }
             if (code !== 1000 && code !== 1005) {
-                console.error(`WebSocket connection closed abnormally with code ${code}. Your cookie and/or token might be incorrect or expired.`)
+                console.error(`WebSocket connection closed abnormally with code ${code} and reason ${reason}. Your cookie and/or token might be incorrect or expired.`)
             }
         })
     });
@@ -235,7 +229,7 @@ function isMessageValid(messsageData, thread) {
     }
     // console.log("messsageData.message.thread_ts === thread.ts", messsageData.message.thread_ts === thread.ts, messsageData.message.thread_ts, thread.ts)
     if (!messsageData.message.thread_ts || !(messsageData.message.thread_ts === thread.ts)) {
-        console.log("Intended: Ignoring Claude sending message in old thread ", messsageData.message.thread_ts)
+        console.log("Intended: Ignoring Claude sending message in other thread ", messsageData.message.thread_ts, " current thread =", thread.ts)
         console.log(JSON.stringify(messsageData.message.text.slice(0, 55).trim()))
         return false
     }
