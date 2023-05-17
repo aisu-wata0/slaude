@@ -380,6 +380,10 @@ function streamNextClaudeResponseChunk(message, res, thread) {
                     }
                 }
 
+                if (thread.lastMessageTs && thread.lastMessageTs !== data.message.ts) {
+                    resolve();
+                    return;
+                }
                 if (text.length <= config.auto_swipe_prebuffer_length) {
                     console_log(`Checking message ${data.message.ts}`)
                     if (generatedTextFiltered(text, !stillTyping)) {
@@ -394,9 +398,13 @@ function streamNextClaudeResponseChunk(message, res, thread) {
                         }
                         thread.totalMessagesCount++;
                         claudePingEdit(thread.promptMessages[0], thread.ts);
+                        resolve();
+                        return;
                     }
-                    resolve();
-                    return;
+                    if (stillTyping) {
+                        resolve();
+                        return;
+                    }
                 }
                 if (thread.lastMessageTs && thread.lastMessageTs !== data.message.ts) {
                     resolve();
