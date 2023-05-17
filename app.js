@@ -96,6 +96,10 @@ app.post('/(.*)/chat/completions', async (req, res, next) => {
             ts: threadTs,
             lastMessage: "",
             promptMessages,
+            ClaudeTsSet: new Set(),
+            ClaudeTsBlacklist: new Set(),
+            messageUpdateCount: {},
+            totalMessagesCount: 0,
         }
         console_log(`Created thread with ts ${thread.ts}`);
 
@@ -150,6 +154,9 @@ app.post('/(.*)/chat/completions', async (req, res, next) => {
             for (let i = 0; i < config.multi_response; i++){
                 await claudePingEdit(thread.promptMessages[0], thread.ts);
                 await waitTimout(config.multi_response_delay)
+                if (thread.lastMessageTs) {
+                    break;
+                }
             }
         } else {
             await createClaudePing(thread.ts);
@@ -274,8 +281,6 @@ function isMessageValid(data, thread) {
         }
     }
     if (senderID && senderID !== config.CLAUDE_USER) {
-        // if not from Claude
-        // console_log("Message from socket not from Claude but from ID =", senderID, JSON.stringify(data.message.text.slice(0, 55).trim()))
         return false;
     }
     if (!isMessageFromThread(data, thread)) {
@@ -298,18 +303,39 @@ function isMessageFromThread(data, thread) {
         return false
     }
     if (!data.message.thread_ts || !(data.message.thread_ts === thread.ts)) {
-        console_log("Intended: Ignoring Claude sending message in other thread ", data.message.thread_ts, " current thread =", thread.ts)
-        console_log(JSON.stringify(data.message.text.slice(0, 55).trim()))
+        console_log("\t Intended: Ignoring Claude sending message in other thread ", data.message.thread_ts, " current thread =", thread.ts, JSON.stringify(data.message.text.slice(0, 33).trim()))
+        return false
+    }
+    if (thread.lastMessageTs && thread.lastMessageTs !== data.message.ts) {
+        console_log(`\t Ignoring i ${data.message.ts}`, JSON.stringify(data.message.text.slice(0, 33).trim()))
         return false
     }
     return true;
 }
+function isLowestKey(node, key) {
+    // Get all the keys from the node object
+    const keys = Object.keys(node);
+    // Find the lowest key
+    // Assume the first key is the lowest
+    let lowestKey = keys[0];
+    // compare each key in a loop
+    for (let i = 1; i < keys.length; i++) {
+        if (keys[i] < lowestKey) {
+            lowestKey = keys[i];
+        }
+    }
+    // Compare the lowest key with the given key
+    return key === lowestKey;
+}
 
+function isNewestMessage(data, thread) {
+    return isLowestKey(thread.messageUpdateCount, data.message.ts )
+}
 function isMessageBlacklisted(data, thread) {
     if (thread.ClaudeTsBlacklist) {
         if (!data.message.ts || thread.ClaudeTsBlacklist.has(data.message.ts)) {
             console_log("Intended: Ignoring Claude's old message ", data.message.ts)
-            console_log(JSON.stringify(data.message.text.slice(0, 55).trim()))
+            console_log(JSON.stringify(data.message.text.slice(0, 33).trim()))
             return true
         }
     }
@@ -348,11 +374,6 @@ function streamNextClaudeResponseChunk(message, res, thread) {
                 return;
             }
             if (data.subtype === 'message_changed') {
-                if (thread.finishTimeout) {
-                    console_log("thread.finishTimeout cleared")
-                    clearTimeout(thread.finishTimeout);
-                    thread.finishTimeout = null;
-                }
                 if (thread.timeout) {
                     clearTimeout(thread.timeout);
                     if (config.reply_timeout_delay) {
@@ -362,8 +383,10 @@ function streamNextClaudeResponseChunk(message, res, thread) {
                         }, config.reply_timeout_delay);
                     }
                 }
-                if (!thread.ClaudeTsSet) {
-                    thread.ClaudeTsSet = new Set();
+                if (thread.finishTimeout) {
+                    console_log("thread.finishTimeout cleared")
+                    clearTimeout(thread.finishTimeout);
+                    thread.finishTimeout = null;
                 }
                 thread.ClaudeTsSet.add(data.message.ts)
 
@@ -375,28 +398,27 @@ function streamNextClaudeResponseChunk(message, res, thread) {
                 if (textUncropped.length > text.length) {
                     stillTyping = false
                     if (data.message.thread_ts) {
-                        // blacklisted_threads.add(data.message.thread_ts);
+                        thread.ClaudeTsBlacklist.add(data.message.ts)
                         console_log("Message thread stopped early ", data.message.thread_ts)
                     }
                 }
 
+                if (!thread.messageUpdateCount[data.message.ts]) {
+                    thread.messageUpdateCount[data.message.ts] = 0;
+                }
+
                 if (thread.lastMessageTs && thread.lastMessageTs !== data.message.ts) {
+                    console_log(`\t Ignoring 0 ${data.message.ts}`, JSON.stringify(data.message.text.slice(0, 33).trim()))
                     resolve();
                     return;
                 }
                 if (text.length <= config.auto_swipe_prebuffer_length) {
                     console_log(`Checking message ${data.message.ts}`)
                     if (generatedTextFiltered(text, !stillTyping)) {
-                        console_log(`Filtered message  ${data.message.ts}, retrying...`)
-                        if (!thread.ClaudeTsBlacklist) {
-                            thread.ClaudeTsBlacklist = new Set();
-                        }
                         thread.ClaudeTsBlacklist.add(data.message.ts)
                         thread.ClaudeTsSet.delete(data.message.ts)
-                        if (!thread.totalMessagesCount) {
-                            thread.totalMessagesCount = 0;
-                        }
                         thread.totalMessagesCount++;
+                        console_log(`\t Filtered message  ${data.message.ts}, retrying...`)
                         claudePingEdit(thread.promptMessages[0], thread.ts);
                         resolve();
                         return;
@@ -406,15 +428,28 @@ function streamNextClaudeResponseChunk(message, res, thread) {
                         return;
                     }
                 }
+                // duped because of race conditions
                 if (thread.lastMessageTs && thread.lastMessageTs !== data.message.ts) {
+                    console_log(`\t Ignoring 1 ${data.message.ts}`, JSON.stringify(data.message.text.slice(0, 33).trim()))
                     resolve();
                     return;
                 }
+                thread.messageUpdateCount[data.message.ts] += 1;
                 // passed filters, use get just this response
                 if (!thread.lastMessageTs) {
-                    if (!thread.totalMessagesCount) {
-                        thread.totalMessagesCount = 0;
+                    let final = !stillTyping
+                    if (!final) {
+                        if (thread.messageUpdateCount[data.message.ts] >= 2 * Math.min(config.multi_response, 2) || Object.keys(thread.messageUpdateCount) >= config.multi_response - 1) {
+                            if (isNewestMessage(data, thread)) {
+                                final = true
+                            }
+                        } // else wait for other msgs
                     }
+                    if (!final) {
+                        resolve();
+                        return;
+                    }
+                    thread.lastMessageTs = data.message.ts
                     thread.totalMessagesCount += thread.ClaudeTsSet.size - 1
                     if (!thread.ClaudeTsBlacklist) {
                         thread.ClaudeTsBlacklist = new Set();
@@ -422,8 +457,8 @@ function streamNextClaudeResponseChunk(message, res, thread) {
                     thread.ClaudeTsBlacklist = new Set([...thread.ClaudeTsSet, ...thread.ClaudeTsBlacklist]);
                     thread.ClaudeTsBlacklist.delete(data.message.ts)
                     thread.ClaudeTsSet = new Set([data.message.ts]);
-                    thread.lastMessageTs = data.message.ts
                     console_log(`Passed filters: ${data.message.ts}`)
+                    console_log(`\tfinal message ${data.message.ts} from ${JSON.stringify(thread.messageUpdateCount)}`)
                 }
 
                 let chunk = getNextChunk(text, thread);
@@ -485,7 +520,7 @@ function getClaudeResponse(message, res, thread) {
         if (!isMessageFromThread(data, thread)) {
             return;
         }
-        if (!isMessageValid(data, thread)) {
+        if (isMessageFile(data)) {
             if (thread.lastMessage && thread.lastMessage.length > 0) {
                 console.warn("MESSAGE INCOMPLETE, CLAUDE SENDING FILE")
                 res.json({
@@ -498,7 +533,21 @@ function getClaudeResponse(message, res, thread) {
             }
             return;
         }
+        if (!isMessageValid(data, thread)) {
+            return;
+        }
         if (data.subtype === 'message_changed') {
+            if (thread.timeout) {
+                clearTimeout(thread.timeout);
+                if (config.reply_timeout_delay) {
+                    thread.timeout = setTimeout(() => {
+                        console_log("Streaming response taking too long, closing stream.")
+                        finishStream(res);
+                    }, config.reply_timeout_delay);
+                }
+            }
+
+
             let text = data.message.text
             let stillTyping = text.endsWith(typingString);
             const textUncropped = text
@@ -506,10 +555,64 @@ function getClaudeResponse(message, res, thread) {
             if (textUncropped.length > text.length) {
                 stillTyping = false
                 if (data.message.thread_ts) {
-                    // blacklisted_threads.add(data.message.thread_ts);
+                    thread.ClaudeTsBlacklist.add(data.message.ts)
                     console_log("Message thread stopped early ", data.message.thread_ts)
                 }
             }
+
+            if (!thread.messageUpdateCount[data.message.ts]) {
+                thread.messageUpdateCount[data.message.ts] = 0;
+            }
+
+            if (thread.lastMessageTs && thread.lastMessageTs !== data.message.ts) {
+                console_log(`\t Ignoring 0 ${data.message.ts}`, JSON.stringify(data.message.text.slice(0, 33).trim()))
+                return;
+            }
+            if (text.length <= config.auto_swipe_prebuffer_length) {
+                console_log(`Checking message ${data.message.ts}`)
+                if (generatedTextFiltered(text, !stillTyping)) {
+                    thread.ClaudeTsBlacklist.add(data.message.ts)
+                    thread.ClaudeTsSet.delete(data.message.ts)
+                    thread.totalMessagesCount++;
+                    console_log(`\t Filtered message  ${data.message.ts}, retrying...`)
+                    claudePingEdit(thread.promptMessages[0], thread.ts);
+                    return;
+                }
+                if (stillTyping) {
+                    return;
+                }
+            }
+            // duped because of race conditions
+            if (thread.lastMessageTs && thread.lastMessageTs !== data.message.ts) {
+                console_log(`\t Ignoring 1 ${data.message.ts}`, JSON.stringify(data.message.text.slice(0, 33).trim()))
+                return;
+            }
+            thread.messageUpdateCount[data.message.ts] += 1;
+            // passed filters, use get just this response
+            if (!thread.lastMessageTs) {
+                let final = !stillTyping
+                if (!final) {
+                    if (thread.messageUpdateCount[data.message.ts] >= 2 * Math.min(config.multi_response, 2) || Object.keys(thread.messageUpdateCount) >= config.multi_response - 1) {
+                        if (isNewestMessage(data, thread)) {
+                            final = true
+                        }
+                    } // else wait for other msgs
+                }
+                if (!final) {
+                    return;
+                }
+                thread.lastMessageTs = data.message.ts
+                thread.totalMessagesCount += thread.ClaudeTsSet.size - 1
+                if (!thread.ClaudeTsBlacklist) {
+                    thread.ClaudeTsBlacklist = new Set();
+                }
+                thread.ClaudeTsBlacklist = new Set([...thread.ClaudeTsSet, ...thread.ClaudeTsBlacklist]);
+                thread.ClaudeTsBlacklist.delete(data.message.ts)
+                thread.ClaudeTsSet = new Set([data.message.ts]);
+                console_log(`Passed filters: ${data.message.ts}`)
+                console_log(`\tfinal message ${data.message.ts} from ${JSON.stringify(thread.messageUpdateCount)}`)
+            }
+
             if (!stillTyping) {
                 res.json({
                     choices: [{
