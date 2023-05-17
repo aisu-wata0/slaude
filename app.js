@@ -303,11 +303,11 @@ function isMessageFromThread(data, thread) {
         return false
     }
     if (!data.message.thread_ts || !(data.message.thread_ts === thread.ts)) {
-        console_log("\t Intended: Ignoring Claude sending message in other thread ", data.message.thread_ts, " current thread =", thread.ts, JSON.stringify(data.message.text.slice(0, 33).trim()))
+        console_log("\t Intended: Ignoring message in other thread ", data.message.thread_ts, "!==", thread.ts, JSON.stringify(data.message.text.slice(0, 33).trim()))
         return false
     }
     if (thread.lastMessageTs && thread.lastMessageTs !== data.message.ts) {
-        console_log(`\t Ignoring i ${data.message.ts}`, JSON.stringify(data.message.text.slice(0, 33).trim()))
+        console_log(`\t Ignoring t ${data.message.ts}`, JSON.stringify(data.message.text.slice(0, 33).trim()))
         return false
     }
     return true;
