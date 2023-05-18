@@ -35,7 +35,7 @@ const config = {
         'user': 'H',
         'assistant': 'A',
         'example_user': 'H',
-        'example_assistant': 'A'
+        'example_assistant': 'A',
     },
 
     minimum_split_size: 500,
@@ -55,7 +55,7 @@ const config = {
     // 0 to disable
     auto_swipe_blacklist_threshold: 2,
     auto_swipe_blacklist: [
-        "ethical",
+        "ethical(ly)?",
         "unethical",
         "guidelines?",
         "harmful",
@@ -65,6 +65,9 @@ const config = {
         "generat(e|ing)",
         "nonconsensual",
         "I apologize",
+        "My apologies",
+        "upon further reflection",
+        "continue this story",
         "(unable to|not) provide",
         "inappropriate",
         "content",
@@ -73,7 +76,10 @@ const config = {
     // wait before starting to send text, lest it be filtered
     auto_swipe_prebuffer_length: 200,
 
-    reply_timeout_delay: 1 * 60 * 1000,
+    // timeout if reply is taking too long to start being received
+    reply_timeout_delay: 30 * 1000,
+    // timeout if reply is message is taking too long to update more
+    reply_update_timeout_delay: 10 * 1000,
 
     PORT: 5004,
 }
