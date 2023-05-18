@@ -210,6 +210,10 @@ app.listen(config.PORT, () => {
 
   console.log("Local tunnel URL: ", tunnel.url);
 
+  const ipResponse = await axios.get("https://ipv4.icanhazip.com");
+
+  console.log("IP Address:", ipResponse.data);
+
   tunnel.on("close", () => {
     // tunnels are closed
   });
