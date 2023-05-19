@@ -89,8 +89,10 @@ const config = {
     // edit more times if the initial `multi_response` few get filtered
     // possibly bad
     retry_count_edit: 0,
-    // Slack is weird, wait a bit before editting or it won't trigger Claude
-    delay_before_edit: 100,
+    // Slack is weird, wait a bit before editting or
+    // it won't trigger Claude
+    // it won't get all context
+    delay_before_edit: 400,
         
     // timeout if reply is taking too long to start being received
     reply_timeout_delay: 30 * 1000,

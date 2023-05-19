@@ -136,7 +136,7 @@ const retryRequest = async (thread) => {
         }
         return
     }
-    console_log("Response taking too long to start, ending.")
+    console_log("Retries exhausted, ending.")
     try {
         thread.res.end();
     } catch (error) {
@@ -494,12 +494,11 @@ function streamNextClaudeResponseChunk(message, res, thread) {
                     return;
                 }
                 if (text.length <= config.auto_swipe_prebuffer_length) {
-                    console_log(`Checking message ${data.message.ts} ${text.slice(0, 33).trim()} [...]`)
                     if (generatedTextFiltered(text, !stillTyping)) {
                         thread.ClaudeTsBlacklist.add(data.message.ts)
                         thread.ClaudeTsSet.delete(data.message.ts)
                         thread.totalMessagesCount++;
-                        console_log(`\t Filtered message ${data.message.ts}`)
+                        console_log(`\t Filtered message ${data.message.ts} ${text.slice(0, 33).trim()} [...]`)
                         if (config.edit_msg_with_ping && thread.retry_count_edit) {
                             thread.retry_count_edit--;
                             console_log(`\t edit retries left ${thread.retry_count_edit}...`)
@@ -675,14 +674,14 @@ function getClaudeResponse(message, res, thread) {
                 return;
             }
             if (text.length <= config.auto_swipe_prebuffer_length) {
-                console_log(`Checking message ${data.message.ts}`)
                 if (generatedTextFiltered(text, !stillTyping)) {
                     thread.ClaudeTsBlacklist.add(data.message.ts)
                     thread.ClaudeTsSet.delete(data.message.ts)
                     thread.totalMessagesCount++;
+                    console_log(`\t Filtered message ${data.message.ts} ${text.slice(0, 33).trim()} [...]`)
                     if (config.edit_msg_with_ping && thread.retry_count_edit) {
                         thread.retry_count_edit--;
-                        console_log(`\t Filtered message ${data.message.ts}, retries left ${thread.retry_count_edit}...`)
+                        console_log(`\t edit retries left ${thread.retry_count_edit}...`)
                         claudePingEdit(thread.promptMessages[0], thread.ts);
                     } else {
                         if (thread.timeout) {
