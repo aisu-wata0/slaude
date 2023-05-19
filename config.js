@@ -46,8 +46,10 @@ const config = {
         "\nHuman: ",
     ],
 
+    // redo the request up to this amount, if it fails
+    retry_count: 3,
 
-    auto_swipe: true,
+    // Automatically fail request if it doesn't pass the below criteria:
     // Be careful with `auto_swipe_minimum_length`, as it will not allow short messages through, set it to 0 if this is undersirable
     // 0 to disable
     auto_swipe_minimum_length: 0,
@@ -68,16 +70,26 @@ const config = {
         "My apologies",
         "upon further reflection",
         "continue this story",
-        "(unable to|not) provide",
+        "(unable to|not) (continue|respond|provide|appropriate)",
         "inappropriate",
         "content",
-        "(unable to) continue",
     ],
     // wait before starting to send text, lest it be filtered
     auto_swipe_prebuffer_length: 200,
 
+    // if edit_msg_with_ping: true
+    // request multiple Claude replies
+    // WARN: if you this above 5 you are fucking yourself over because:
+    // * it seems like there's a limited amount of Claude responses at the same time for each workspace, so you'll have to wait for every request to finish to get your next ones
+    // * requests might poison one another, if one takes too long to start, maybe
+    multi_response: 3,
+    multi_response_delay: 50,
+    retry_count_edit: 1,
+
     // timeout if reply is taking too long to start being received
     reply_timeout_delay: 30 * 1000,
+    // timeout if waiting just for the last multi reply
+    reply_multi_timeout_delay: 2 * 1000,
     // timeout if reply is message is taking too long to update more
     reply_update_timeout_delay: 10 * 1000,
 
