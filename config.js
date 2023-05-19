@@ -44,10 +44,11 @@ const config = {
     stop_message_when_string_is_found: [
         "\nH: ",
         "\nHuman: ",
+        "<EOT>",
     ],
 
     // redo the request up to this amount, if it fails
-    retry_count: 3,
+    retry_count: 5,
 
     // Automatically fail request if it doesn't pass the below criteria:
     // Be careful with `auto_swipe_minimum_length`, as it will not allow short messages through, set it to 0 if this is undersirable
