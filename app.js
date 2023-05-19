@@ -28,7 +28,10 @@ function console_error(...args) {
     console.error(`[${getDateFormatted()}]`, ...args);
 }
 
-function waitTimout(ms) {
+async function waitTimout(ms) {
+    if (!ms) {
+        return;
+    }
     return new Promise((resolve) => {
         setTimeout(resolve, ms);
     });
@@ -195,7 +198,7 @@ async function makeRequestToSlack(thread) {
 
     if (config.edit_msg_with_ping) {
         // if you don't wait, Slack can go weird, needs more testing
-        await waitTimout(100)
+        await waitTimout(config.delay_before_edit)
         for (let i = 0; i < config.multi_response; i++) {
             await claudePingEdit(thread.promptMessages[0], thread.ts);
             await waitTimout(config.multi_response_delay)
@@ -205,7 +208,6 @@ async function makeRequestToSlack(thread) {
         }
     } else {
         await createClaudePing(thread.ts);
-        console_log(`Created Claude ping on thread ${thread.ts}`);
     }
 }
 
@@ -956,9 +958,10 @@ async function claudePingEdit(promptMsg, threadTs) {
         msg_with_ping = promptMsg + "\n" + ping
     }
     await postSlackMessage(msg_with_ping, null, false, threadTs);
-    console_log(`Added Claude ping on thread ${threadTs}`);
+    console_log(`Added Claude ping on ts ${threadTs}`);
 }
 
 async function createClaudePing(ts) {
-    return await postSlackMessage(null, ts, true);
+    await postSlackMessage(null, ts, true);
+    console_log(`Created Claude ping on ts ${ts}`);
 }

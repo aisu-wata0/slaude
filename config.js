@@ -83,9 +83,14 @@ const config = {
     // * it seems like there's a limited amount of Claude responses at the same time for each workspace, so you'll have to wait for every request to finish to get your next ones
     // * requests might poison one another, if one takes too long to start, maybe
     multi_response: 3,
+    // delay between edits, could possibly be lower, didn't test it
     multi_response_delay: 50,
-    retry_count_edit: 1,
-
+    // edit more times if the initial `multi_response` few get filtered
+    // possibly bad
+    retry_count_edit: 0,
+    // Slack is weird, wait a bit before editting or it won't trigger Claude
+    delay_before_edit: 100,
+        
     // timeout if reply is taking too long to start being received
     reply_timeout_delay: 30 * 1000,
     // timeout if waiting just for the last multi reply
