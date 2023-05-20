@@ -591,7 +591,7 @@ function streamNextClaudeResponseChunk(message, res, thread) {
                     }]
                 };
                 try {
-                    res.write('\ndata: ' + JSON.stringify(streamData));
+                    res.write('\n\ndata: ' + JSON.stringify(streamData));
                 } catch (error) {
                     console_error(error)
                 }
@@ -790,7 +790,7 @@ function getClaudeResponse(message, res, thread) {
  */
 function finishStream(res) {
     try {
-        res.write('\ndata: [DONE]');
+        res.write('\n\ndata: [DONE]');
     } catch (error) {
         console_error(error)
     }
