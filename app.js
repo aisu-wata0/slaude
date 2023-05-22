@@ -173,6 +173,7 @@ async function makeRequestToSlack(thread) {
     if (!thread.ws) {
         thread.ws = await openWebSocketConnection(thread.res);
         if (thread.stream) {
+            thread.res.setHeader("Content-Type", "text/event-stream");
             console_log("Opened stream for Claude's response.");
             thread.streamQueue = Promise.resolve();
             thread.ws.on("message", (message) => {
