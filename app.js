@@ -1,12 +1,13 @@
 import express from 'express';
 import axios from 'axios';
+import cors from 'cors';
 import FormData from 'form-data';
 import WebSocket from 'ws';
 import config from './config.js';
 import splitMessageInTwo from './utils.js';
 
 const app = express();
-
+app.use(cors());
 
 const typingString = "\n\n_Typing…_";
 
