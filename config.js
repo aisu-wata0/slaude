@@ -71,7 +71,7 @@ const config = {
         "My apologies",
         "upon further reflection",
         "continue this story",
-        "(unable to|not) (continue|respond|provide|appropriate)",
+        "(unable to|not|cannot) (continue|respond|provide|appropriate|assist)",
         "inappropriate",
         "content",
     ],
@@ -93,7 +93,7 @@ const config = {
     // it won't trigger Claude
     // it won't get all context
     delay_before_edit: 400,
-        
+
     // timeout if reply is taking too long to start being received
     reply_timeout_delay: 30 * 1000,
     // timeout if waiting just for the last multi reply
