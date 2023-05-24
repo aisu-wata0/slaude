@@ -83,7 +83,7 @@ const config = {
     // WARN: if you this above 5 you are fucking yourself over because:
     // * it seems like there's a limited amount of Claude responses at the same time for each workspace, so you'll have to wait for every request to finish to get your next ones
     // * requests might poison one another, if one takes too long to start, maybe
-    multi_response: 3,
+    multi_response: 1,
     // delay between edits, could possibly be lower, didn't test it
     multi_response_delay: 50,
     // edit more times if the initial `multi_response` few get filtered
