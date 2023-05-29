@@ -95,6 +95,39 @@ Do: `nano ~/.termux/termux.properties`
 Type the line: `shortcut.create-session=ctrl + t` anywhere in the file, just make sure you're writing on a fresh line and press ctrl+o, enter, ctrl+x.  
 Now to run a new session, simply press ctrl+t.
 
+# Changelog
+
+## 2023-05-18
+
+slaude now requests multiple times simultaneously so you have bigger chances of getting pass the filter (shorthand multi reply).
+this only works if you're editting in the ping however. i.e. `edit_msg_with_ping: true,`
+Before you set `multi_response` in the config to 1000, know that you'll fuck yourself over because:
+    * it seems like there's a limited amount of Claude responses at the same time for each workspace, so you'll have to wait for every request to finish to get your next ones
+    * requests might poison one another, if one takes too long to start, maybe
+
+I also fixed the automatic retry, both on streaming/non-streaming and pinging/editting.
+You can limit the number of retries. `retry_count: 5,`
+* I think it didn't work at all if you were ping messaging (old way) and not editing the ping in (newest update way) (i.e. edit_msg_with_ping: false).
+* added more timeouts, there's 3 total
+ * timeout if reply is taking too long to start being received
+ * timeout if reply is message is taking too long to update
+ * timeout if waiting just for the last few multi reply
+ 
+Anons had reported, and I also had a bit of evidence that this new way of editing the ping in might somehow be filtering more than adding a ping at the end.
+So to be clear, in the config:
+when
+edit_msg_with_ping: false
+the prompt is sent the exact same way as old slaude
+when
+edit_msg_with_ping: true
+instead of sending another message after your prompt, with the Claude ping and your PING_MESSAGE_PREFIX and PING_MESSAGE
+The ping is edited in to the top of your prompt, before it. So it could technically go out of context even if you're lucky or put lots of tokens in `PING_SUFFIX`. (I actually will try doing that right now, dunno why I didn't yet)
+
+
+## 2023-05-29
+
+Now never ignores responses, from possibly previous threads, from the same request.
+Something is weird with how events and timeouts race.
 
 # Final note
-I don't believe in names or avatars. I will be PandarusAnon on here because I needed a name for GitHub but I don't and won't use this name anywhere else.
+Thanks PandarusAnon for making this.

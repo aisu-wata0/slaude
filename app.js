@@ -153,6 +153,10 @@ async function makeRequestToSlack(thread) {
     }
     
     thread.ts = threadTs
+    if (!thread.ts_set) {
+        thread.ts_set = new Set()
+    }
+    thread.ts_set.add(`${thread.ts}`)
     thread.lastMessage = ""
     thread.ClaudeTsSet = new Set()
     thread.ClaudeTsBlacklist = new Set()
@@ -394,9 +398,16 @@ function isMessageFromThread(data, thread) {
     if (isMessageBlacklisted(data, thread)) {
         return false
     }
-    if (!data.message.thread_ts || !(data.message.thread_ts === thread.ts)) {
-        console_log("\t Intended: Ignoring message in other thread ", data.message.thread_ts, "!==", thread.ts, JSON.stringify(data.message.text.slice(0, 33).trim()))
+
+    if (!data.message.thread_ts || !(thread.ts_set.has(`${data.message.thread_ts}`))) {
+        console_log("\t Intended: Ignoring message in unrelated thread ", data.message.thread_ts, " not in ", thread.ts_set, JSON.stringify(data.message.text.slice(0, 33).trim()))
         return false
+    }
+    if (config.ignore_old_threads) {
+        if (!data.message.thread_ts || !(data.message.thread_ts === thread.ts)) {
+            console_log("\t Intended: Ignoring message in other thread ", data.message.thread_ts, "!==", thread.ts, JSON.stringify(data.message.text.slice(0, 33).trim()))
+            return false
+        }
     }
     if (thread.lastMessageTs && thread.lastMessageTs !== data.message.ts) {
         console_log(`\t Ignoring t ${data.message.ts}`, JSON.stringify(data.message.text.slice(0, 33).trim()))
@@ -512,7 +523,6 @@ function streamNextClaudeResponseChunk(message, res, thread) {
                             if (config.edit_msg_with_ping) {
                                 repliesPerRequest = config.multi_response;
                                 repliesPerRequest += config.retry_count_edit;
-                                repliesPerRequest--;
                             }
                             const repliesLeft = repliesPerRequest - thread.ClaudeTsBlacklist.size
                             console_log(`\t replies ${thread.ClaudeTsBlacklist.size}/${repliesPerRequest}`)

@@ -78,6 +78,7 @@ const config = {
     // wait before starting to send text, lest it be filtered
     auto_swipe_prebuffer_length: 200,
 
+    ignore_old_threads: false,
     // if edit_msg_with_ping: true
     // request multiple Claude replies
     // WARN: if you this above 5 you are fucking yourself over because:
@@ -99,7 +100,7 @@ const config = {
     // timeout if waiting just for the last multi reply
     reply_multi_timeout_delay: 6 * 1000,
     // timeout if reply is message is taking too long to update more
-    reply_update_timeout_delay: 10 * 1000,
+    reply_update_timeout_delay: 25 * 1000,
 
     PORT: 5004,
 }
